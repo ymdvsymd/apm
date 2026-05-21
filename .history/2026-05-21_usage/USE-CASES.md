@@ -25,11 +25,22 @@
 
 **カテゴリ:** Getting Started
 **難易度:** 初級
-**使うコマンド:** [`apm init`](./COMMANDS.md#apm-init), [`apm install`](./COMMANDS.md#apm-install), [`apm compile`](./COMMANDS.md#apm-compile), [`apm targets`](./COMMANDS.md#apm-targets)
+**使うコマンド:** [`apm init`](./COMMANDS.md#apm-init), [`apm install`](./COMMANDS.md#apm-install), [`apm targets`](./COMMANDS.md#apm-targets)
 
 ### 状況
 
 新しいプロジェクトを始めるにあたって、VS Code + GitHub Copilot にチーム標準の skills と指示書を読ませたい。手で `.github/copilot-instructions.md` を書き続けるのは限界。サードパーティの skill コレクション（例: `anthropics/skills`、`vercel-labs/agent-skills`）を取り込んで再現可能な形で運用したい。
+
+取り込み元のリポジトリは APM 専用である必要はない。APM はルート構造を見て次の 4 形式を自動判別する:
+
+| ルートのシグナル | パッケージ種別 | install 時の挙動 |
+|---------------|------------|---------------|
+| `.apm/` ディレクトリ | APM ネイティブパッケージ | 各 primitive を runtime ディレクトリに展開 |
+| `SKILL.md`（ルート直下） | 単一の skill バンドル | `<target>/skills/<name>/` に丸ごとコピー |
+| `skills/<name>/SKILL.md`（ネスト） | skill コレクション（agentskills.io / `npx skills` 互換） | 各 skill を `<target>/skills/<name>/` に昇格 |
+| `plugin.json` / `.claude-plugin/` | Claude Code plugin | plugin 内 artifact を分解して各ランタイムにマップ |
+
+つまり `vercel-labs/agent-skills`（skill コレクション）も Claude Code plugin もそのまま `apm install` できる。`apm.yml` が無いリポでも、APM はディレクトリ名から最小限の metadata を合成して扱う。
 
 ### 手順
 
@@ -44,7 +55,7 @@
    ```bash
    apm install vercel-labs/agent-skills
    ```
-   `apm_modules/vercel-labs/agent-skills/` に取得され、`.github/instructions/` や `.agents/skills/` に配置される。
+   `apm_modules/vercel-labs/agent-skills/` に取得され、Copilot ターゲットなら `.github/instructions/*.instructions.md` と `.agents/skills/<name>/SKILL.md` に**個別ファイルとして直接デプロイ**される。`install` がここまでやってくれるので、これだけで VS Code Copilot は読み込める。
 
 3. 一部の skill だけが必要なら、絞り込んでインストールする。
    ```bash
@@ -52,26 +63,26 @@
    ```
    `apm.yml` の `dependencies.apm:` に明示的にエントリが残るため、再現性は保たれる。
 
-4. Copilot 用の集約ファイルを生成する。
-   ```bash
-   apm compile -t copilot
-   ```
-   `.github/copilot-instructions.md` が出来上がる。VS Code でこのリポを開き直せば自動で読み込まれる。
-
-5. 結果を確認する。
+4. 結果を確認する。
    ```bash
    apm targets
    apm view vercel-labs/agent-skills
+   ls .github/instructions/ .agents/skills/
    ```
 
 ### 期待される結果
 
 - `apm targets` の `copilot` 行が `STATUS: active` で表示される
-- `.github/copilot-instructions.md` に skill 由来のセクションが含まれる
+- `.github/instructions/` 配下に skill 由来の `*.instructions.md` が並び、`.agents/skills/<name>/SKILL.md` も配置される
 - `apm.lock.yaml` がコミット対象として追加されており、再 clone 時も同じ ref が解決される
+- VS Code でこのリポを開き直すと Copilot が `.github/instructions/*` を自動でコンテキストに取り込む
 
 ### ヒント
 
+- **`apm compile` はこのシナリオでは不要**。`install` が外部依存のプリミティブを各クライアントの個別ファイルとして配置するため、Copilot は `.github/instructions/*.instructions.md` を直接読む。`apm compile` が必要になるのは次のいずれか:
+  - `.apm/instructions/*.instructions.md` を**自分で**書いて集約したいとき（外部依存ではなくローカルプリミティブ）
+  - 単一エントリポイント MD を期待するクライアント (`AGENTS.md` = Codex / `CLAUDE.md` = Claude Code / `GEMINI.md` = Gemini CLI) を使うとき
+  - 旧運用で `.github/copilot-instructions.md` の集約形式を維持したいとき
 - `apm install --dry-run` で適用前に diff を確認できる
 - npm の `npx skills add` から来た人は `apm install vercel-labs/agent-skills` がドロップイン置き換え
 - skills を消したくなったら `apm uninstall vercel-labs/agent-skills`
@@ -109,10 +120,10 @@
    ---
    ```
 
-3. ローカルで動作確認する。
+3. ローカルで動作確認する。`.apm/instructions/` のローカルプリミティブは install では対象外なので、集約を見たい場合に compile を回す。Claude Code を使うなら `CLAUDE.md`、Cursor を使うなら `AGENTS.md` の生成にこれが必要。Copilot だけなら不要（VS Code が `.github/instructions/*` を直読みする）。
    ```bash
-   apm compile -t copilot,claude
-   apm preview                # スクリプト実行前のプロンプトを確認
+   apm compile -t claude,cursor      # 集約 MD が必要なクライアント向け
+   apm preview                       # スクリプト実行前のプロンプトを確認
    ```
 
 4. push して tag を切る。
@@ -121,11 +132,11 @@
    git tag v1.0.0 && git push origin v1.0.0
    ```
 
-5. 消費側リポで取り込む。
+5. 消費側リポで取り込む。`apm install` だけで `.github/instructions/` などには配置される。`CLAUDE.md` / `AGENTS.md` を使うクライアントがあれば追加で `apm compile`。
    ```bash
    cd ../other-repo
    apm install our-org/coding-standards#v1.0.0
-   apm compile
+   apm compile -t claude,cursor      # 必要なクライアントを使う場合のみ
    ```
 
 6. （任意）bundle / plugin として配布する場合は pack する。
@@ -137,7 +148,8 @@
 
 ### 期待される結果
 
-- 消費側リポの `.github/copilot-instructions.md` / `CLAUDE.md` / `.cursor/rules/*.mdc` に共通指示書が集約される
+- 消費側リポの `.github/instructions/*.instructions.md`, `.claude/rules/*.md`, `.cursor/rules/*.mdc` に個別ファイルとして配置される（`apm install` 直後）
+- `apm compile` 実行後は `CLAUDE.md`（Claude Code 用）と `AGENTS.md`（Cursor 用）も生成される
 - `apm.lock.yaml` に commit SHA が記録され、いつ消費したかが追跡可能
 - 上流の `coding-standards` を更新したら、消費側は `apm update` で取り込める
 
@@ -166,20 +178,19 @@
    ```
    または既存プロジェクトに対しては `apm.yml` の `target:` フィールドを `all` か `[copilot, claude, cursor, codex, gemini, opencode, windsurf]` に書き換える。
 
-2. 共通依存をインストールする。
+2. 共通依存をインストールする。これだけで各ターゲット固有のディレクトリ（`.github/` / `.claude/` / `.cursor/` / `.codex/` / `.gemini/` / `.opencode/` / `.windsurf/`）にプリミティブが個別ファイルとして配置される。VS Code Copilot はこの時点で `.github/instructions/*` を直読みする。
    ```bash
    apm install microsoft/apm-sample-package
    ```
-   各ターゲット固有のディレクトリ（`.github/` / `.claude/` / `.cursor/` / `.codex/` / `.gemini/` / `.opencode/` / `.windsurf/`）に同じ内容が配置される。
 
-3. すべてのターゲットでコンパイルする。
+3. 集約 MD を読むクライアント（Claude / Gemini / Codex / Cursor / OpenCode / Windsurf）のためにコンパイルする。Copilot だけなら本ステップは省略可。
    ```bash
-   apm compile -t all
+   apm compile -t claude,gemini,codex,cursor,opencode,windsurf
    ```
-   - `.github/copilot-instructions.md`
-   - `CLAUDE.md`
-   - `GEMINI.md`
-   - `AGENTS.md`（Codex / Cursor / Windsurf / OpenCode 用）
+   生成物:
+   - `CLAUDE.md`（Claude Code）
+   - `GEMINI.md`（Gemini CLI）
+   - `AGENTS.md`（Codex / Cursor / Windsurf / OpenCode 用、`AGENTS.md` を最優先で読むため）
 
 4. 検出と差分を確認する。
    ```bash
@@ -286,9 +297,9 @@ GitHub MCP サーバ（`io.github.github/github-mcp-server`）を Copilot / Clau
 
 2. プリミティブを書く。たとえば `.apm/agents/release-notes.agent.md` に agent 定義を作る。
 
-3. ローカルで動作確認する。
+3. ローカルで動作確認する。`.apm/` 配下のローカルプリミティブを集約して挙動を見るため compile が必要。Claude / Cursor のように `CLAUDE.md` / `AGENTS.md` を読むクライアントで試したい場合は対象に含める。Copilot だけで確認するなら compile 不要。
    ```bash
-   apm compile -t copilot,claude,cursor
+   apm compile -t claude,cursor      # 集約 MD を作ってからプレビュー
    apm preview my-agent
    ```
 

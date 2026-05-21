@@ -139,21 +139,28 @@ apm install microsoft/apm-sample-package --dry-run
 
 ---
 
-## Step 5: コンパイルしてエージェントに読み込ませる
+## Step 5: （任意）集約ファイルを生成する
 
-Copilot ターゲットなら、`.github/copilot-instructions.md` の生成までやって初めて VS Code の Copilot が読む。
+`apm install` は各ターゲットのディレクトリに **個別ファイル** を配置するところまで自動でやる。Copilot なら `.github/instructions/*.instructions.md`、Claude なら `.claude/rules/*` などにファイルが並んでおり、VS Code Copilot は `.github/instructions/*` を自動で読むのでこの時点で動く。
+
+`apm compile` が必要になるのは **ルート集約 MD を期待するクライアント** を使う場合だけ:
+
+| クライアント | 集約ファイル | compile 必要？ |
+|------------|------------|--------------|
+| GitHub Copilot (VS Code) | `.github/copilot-instructions.md` | 不要（個別ファイル直読みで動く）。旧運用を維持したい場合のみ |
+| Claude Code | `CLAUDE.md` | 必要 |
+| Gemini CLI | `GEMINI.md` | 必要 |
+| Codex / OpenCode / Cursor / Windsurf | `AGENTS.md` | 必要（`AGENTS.md` を最優先で読むため） |
+
+該当する場合のコンパイル:
 
 ```bash
-apm compile -t copilot
+apm compile -t claude          # CLAUDE.md を生成
+apm compile -t gemini          # GEMINI.md を生成
+apm compile -t copilot,claude  # 複数ターゲットを一括
 ```
 
-VS Code でこのリポジトリを開き直すと、Copilot が `.github/copilot-instructions.md` を自動的にコンテキストに取り込む。Claude Code を使っているなら `CLAUDE.md` が、Gemini なら `GEMINI.md` が生成される（`-t claude` / `-t gemini`）。
-
-複数ターゲットを一度にコンパイルする場合:
-
-```bash
-apm compile -t copilot,claude,cursor
-```
+`apm compile` は `.apm/instructions/*.instructions.md` のような **自分で書いたローカル指示書** も拾うので、外部依存と組み合わせて 1 つの集約 MD にする用途でも使う。
 
 ---
 
