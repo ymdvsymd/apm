@@ -72,7 +72,7 @@ GitHub の web UI で diff を見ても、人間にはなにも見えない。�
 
 これは仮想的な脅威ではなく、2024 年以降 [複数の研究](https://arxiv.org/abs/2402.06363) で実証されている。`npm` や `pip` は「依存パッケージのテキスト内容を、ステガノグラフィー攻撃を念頭にスキャンする」という機能を持たない。**AI エージェント context は、既存パッケージマネージャの脅威モデルに含まれていない。**
 
-APM は `apm install` のたびに、配布される全プリミティブを ContentScanner にかけ、危険な Unicode 範囲を検出し、Critical 判定が出れば `--force` がない限りインストール自体を止める。これは Promise 2 と呼ばれる仕様の中核機能。
+APM は `apm install` のたびに、配布される全プリミティブを ContentScanner にかけ、危険な Unicode 範囲を検出し、Critical 判定が出れば `--force` がない限りインストール自体を止める。これは APM が公式に掲げる **「Secure by default」** ── 後述する "3 つの約束" の 2 つ目 ── の中核機能だ。
 
 ### 3. MCP サーバーの推移的依存はサプライチェーン攻撃の現実的なベクトル
 
@@ -113,6 +113,18 @@ APM のポリシー機構 `apm-policy.yml` は **インストール前** に走�
 しかも継承が **tighten-only**（厳しくする方向のみ）。組織のベースライン (`enterprise/apm-policy.yml`) が `enforcement: warn` なら、リポジトリ側は `block` には上げられるが `off` には下げられない。許可リストは交差（intersect）、拒否リストは和（union）。「子が親を緩める」は構造的に不可能になっている。
 
 これは「npm + supply-chain attack 対策」を企業がやろうとすると、外部 SaaS（Socket, Snyk, Sonatype など）を入れて、Pre-commit hook と CI gate と code review を組み合わせる必要があった。APM はこれをツールチェーン本体に組み込んだ。
+
+### 補足: APM 自身が掲げる "3 つの約束"
+
+ここまでに挙げた 4 つの問題意識は、APM のドキュメントでは **3 Promises** という名前で整理されている。記事中でも以降この呼び方を使うので、対応関係を先に明示しておく。
+
+| 約束 | 何を保証するか | 上記の Why のどこに対応 |
+|---|---|---|
+| **Promise 1: Portable by manifest** | 1 つの `apm.yml` → 7 ハーネス、再現可能 | 第 1 節（ハーネス乱立） |
+| **Promise 2: Secure by default** | 配布前の Unicode スキャン、コンテンツハッシュ pin、推移的 MCP のゲート | 第 2 節（Unicode 攻撃） + 第 3 節（推移的 MCP） |
+| **Promise 3: Governed by policy** | インストール時にポリシー強制、tighten-only 継承 | 第 4 節（事後 audit では遅い） |
+
+APM のあらゆる機能・フラグ・lockfile フィールドは、このどれか 1 つを後ろから支えている。「なぜこの設計？」と迷ったら、まずどの Promise を成立させるためかを問えば大体腑に落ちる。
 
 ---
 
@@ -516,16 +528,16 @@ apm preview review                      # 実行前にコマンド全文を表�
 
 ここから先は組織で運用する話。
 
-`apm audit --ci` は 8 つの baseline check を順に走る。
+`apm audit --ci` は以下 8 項目を順に検証する。
 
-1. **manifest-parse** ─ `apm.yml` の YAML 構文と APM スキーマ
-2. **lockfile-exists** ─ 依存があれば `apm.lock.yaml` も存在せよ
-3. **ref-consistency** ─ `apm.yml` の参照と lockfile の `resolved_ref` が一致せよ
-4. **deployed-files-present** ─ lockfile に記された全配布ファイルがディスクに存在せよ
-5. **no-orphaned-packages** ─ lockfile に居て `apm.yml` に居ないパッケージは無いこと
-6. **skill-subset-consistency** ─ skill bundle のサブセット選択が一致せよ
-7. **config-consistency** ─ MCP 設定が lockfile の baseline と一致せよ
-8. **content-integrity** ─ 全配布ファイルの SHA-256 を再計算して lockfile と照合
+1. **manifest-parse** ─ `apm.yml` の YAML 構文と APM スキーマが妥当であること
+2. **lockfile-exists** ─ 依存が宣言されているなら `apm.lock.yaml` も存在すること
+3. **ref-consistency** ─ `apm.yml` の各依存の ref と lockfile の `resolved_ref` が一致すること
+4. **deployed-files-present** ─ lockfile に記録された配布ファイルがすべてディスク上に実在すること
+5. **no-orphaned-packages** ─ lockfile に記録されたパッケージがすべて `apm.yml` 側にも宣言されていること（孤立パッケージが無いこと）
+6. **skill-subset-consistency** ─ skill bundle 型パッケージのサブセット選択が `apm.yml` と lockfile で一致すること
+7. **config-consistency** ─ 現在の MCP 設定が lockfile に記録されたベースラインと一致すること
+8. **content-integrity** ─ 全配布ファイルの SHA-256 を再計算した値が lockfile のハッシュと一致すること（隠し Unicode のスキャンも併走）
 
 加えて `--no-drift` を渡さなければ **drift 再生検査** が走る。temp ディレクトリに install を replay し、現状の working tree と diff する。手で書き換えた `.claude/rules/python-style.md` を検出する仕組みはこれ。
 
@@ -561,56 +573,122 @@ SARIF アップロードを足せば Code Scanning に出るので、Branch Prot
 
 ### ユースケース ⑦: 組織ポリシーで通せる依存を制限する
 
-最終的に「個人」→「チーム」→「組織」まで来た時の話。
+最終的に「個人」→「チーム」→「組織」まで来た時の話。組織で `apm-policy.yml` を 1 ファイル管理すれば、傘下のあらゆるリポジトリ（プロデューサーもコンシューマーも）が `apm install` する瞬間に、ファイル書き出し前のポリシー検査が走る。
 
-`apm-policy.yml` を組織の `.github` リポジトリに置く。`apm install` はそれを自動取得する。
+#### ポリシーはどこに置き、どう届くのか
+
+GitHub には `<org>/.github` という名前の「組織共有のデフォルト設定置き場リポジトリ」の慣習があり、issue/PR テンプレや profile README もそこに置く。APM はこの慣習に相乗りして、`<org>/.github` リポジトリの中の `apm-policy.yml` を組織ポリシーの正規配置先と定めている。
+
+これはモノリポではなく、**同じ GitHub Organization に属する独立したリポジトリ群** の話だ：
+
+```text
+GitHub Organization: acme
+├─ Repository: acme/.github           ← 組織共有設定リポジトリ
+│   └─ apm-policy.yml                  ← ★ APM が見に行く 1 ファイル
+│
+├─ Repository: acme/web-app           ← 個別プロジェクト
+│   ├─ apm.yml
+│   └─ apm.lock.yaml
+│
+└─ Repository: acme/api-server        ← 個別プロジェクト
+    ├─ apm.yml
+    └─ apm.lock.yaml
+```
+
+`acme/web-app` で `apm install` を走らせると：
+
+1. プロジェクトの git remote (`origin`) から組織名 `acme` を抽出
+2. `acme/.github` リポジトリから `apm-policy.yml` を GitHub API 経由で取得
+3. `apm_modules/.policy-cache/<sha256>.yml` にキャッシュ（デフォルト TTL 1 時間）
+4. 依存解決後、ファイル書き出し前のポリシーゲートで適用
+
+プロジェクト側には何も置かない。`apm.yml` への参照記述も `.apmrc` 的な設定もいらない。組織管理者が `<org>/.github` リポジトリに 1 ファイル push すれば、その組織配下の全リポジトリで次回 install から効く（GHE Cloud / GHES でも同じ）。
+
+判定は git remote だけで決まるので、リポジトリの種類は問わない。自前の `.apm/` を持たない「他人のパッケージを取り込むだけ」のコンシューマーリポジトリも、同じ組織配下にある限り自動で縛られる ── というより、それこそが主な保護対象だ。
+
+#### `apm-policy.yml` の中身
 
 ```yaml
-# .github/apm-policy.yml
-name: contoso-baseline
-version: "2025.05"
+# acme/.github/apm-policy.yml
+name: acme-baseline
+version: "2026.05"
 enforcement: warn         # off | warn | block
+fetch_failure: warn       # フェッチ失敗時のデフォルト挙動
 
 dependencies:
   allow:
-    - contoso/*
+    - acme/*
     - microsoft/apm-skills-*
   deny:
     - "*/legacy-*"
-  max_depth: 25
+  max_depth: 3            # 推移的依存の深さを制限
 
 mcp:
   allow:
     - github/github-mcp-server
-    - contoso/internal-mcp-*
+    - acme/internal-mcp-*
   transport:
     allow:
       - stdio
       - streamable-http   # SSE や生 HTTP を禁止できる
   trust_transitive: false # 推移的 MCP はデフォルト deny
+  self_defined: deny      # apm.yml 内のインライン MCP 定義を禁止
 
 manifest:
+  scripts: allow          # apm.yml の scripts: ブロックを許可する場合
   require_explicit_includes: true
 ```
 
-#### 継承の semantics（tighten-only）
+#### 継承: tighten-only
 
-- **allow-list は交差**: 親が `[contoso/*, microsoft/*]` を許可し、子が `[contoso/*, acme/*]` を許可しても、結果は `[contoso/*]` のみ
+組織が大きい場合、ポリシーを複数階層に分けたい。`extends:` で他のポリシーを継承できる（最大 5 階層、`cross-host extends` は credential leak 防止のため拒否される）：
+
+```yaml
+# acme-payments/.github/apm-policy.yml — チームポリシー
+name: payments-team-policy
+extends: "acme/.github"           # 組織ベースラインから継承
+dependencies:
+  deny:
+    - "legacy-internal/**"        # チームレベルで追加 deny
+mcp:
+  transport:
+    allow: [stdio]                # チームレベルで transport を絞る
+```
+
+マージのルール：
+
+- **allow-list は交差**: 親が `[acme/*, microsoft/*]`、子が `[acme/*, vendor/*]` を許可しても、結果は `[acme/*]` のみ
 - **deny-list は和**: 親で deny されたものは子でも deny。子が unblock することはできない
-- **enforcement はエスカレーションのみ**: `off < warn < block`。子は親より厳しくはできるが、緩めることはできない
+- **enforcement はエスカレーションのみ**: `off < warn < block`。子は厳しくできるが、緩めることはできない
 
-これは「組織が緩めない、リポジトリが厳しくできる」という方向性を構造的に保証する。policy が 5 段（enterprise → BU → team → repo → personal）重なっても、安全側に倒れる。
+「組織が緩めない、リポジトリが厳しくできる」を構造的に保証する設計だ。5 段（enterprise → BU → team → repo → personal）重なっても安全側に倒れる。
+
+#### よくある落とし穴
+
+- **依存先パッケージのポリシーは引き継がれない**。`acme/web-app` が `vendor/cool-skills` を依存に入れても、`vendor` 組織の `apm-policy.yml` は **見に行かない**。配布側が利用側の挙動を縛れないようにする意図的な設計
+- **個人フォークでポリシーが外れる**。フォーク先 org の `.github` を見に行く既知挙動。対策は canonical repo の branch protection に `apm audit --ci --policy ./vendored-policy.yml` を組み、ローカルにベンダリングしたポリシーを必ず通すこと
+- **`--no-policy` は CI gate を抜けない**。ローカル diagnostic 用のスイッチであって、組織防衛をすり抜ける手段ではない
+
+#### プロジェクト側で挙動を微調整したい場合
+
+デフォルトの自動取得で十分だが、`apm.yml` に `policy:` ブロックを足すとさらに引き締められる：
+
+```yaml
+# apm.yml
+policy:
+  hash: "sha256:abc123..."           # 取得ポリシーのハッシュをピン（中間改竄を検知）
+  fetch_failure_default: block       # ポリシー取得失敗時にインストールを止める
+```
+
+`hash` ピンはプロキシ経由でポリシーが書き換えられた場合に fail-closed する。`fetch_failure_default: block` は air-gapped 環境や「ポリシー無しの install を絶対許さない」場合に使う。
 
 #### 観察用コマンド
 
 ```bash
-apm policy status            # 現在適用中のポリシー、enforcement レベル、キャッシュ年齢
-apm policy status -o json    # machine-readable
+apm policy status            # 現在適用中のポリシー、enforcement、キャッシュ年齢
 apm install --dry-run        # 何がブロックされるかプレビュー（書き込みなし）
-apm install --no-policy      # 1 回だけバイパス（CI の audit では依然として捕まる）
+apm install --no-policy      # 1 回だけバイパス（CI audit で依然として捕まる）
 ```
-
-`--no-policy` は **CI gate を抜けない**。「ローカルで実験する人向けの diagnostic switch」であって、組織防衛をすり抜ける手段ではない。これも設計判断のよくできた点。
 
 ### ユースケース 番外: プライベートリポジトリと監査対応
 
